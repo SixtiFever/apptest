@@ -1,88 +1,220 @@
-package com.example.ecm2425.app_utils;
+package com.example.ecm2425;
 
-import java.io.Serializable;
-import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
+import androidx.appcompat.app.AppCompatActivity;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.os.Bundle;
+import android.view.Menu;
+import android.view.MenuInflater;
+import android.view.MenuItem;
+import android.widget.Button;
+import android.widget.TextView;
+import org.json.JSONObject;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.util.Collections;
-import java.util.Comparator;
-import java.util.UUID;
-import java.util.stream.Collectors;
+import java.util.Map;
 
-public class Log implements Serializable {
+public class MainActivity extends AppCompatActivity implements RecyclerViewInterface {
 
-    /* private fields */
-    private UUID mID;
+    private final String API_KEY = "5m1cJmo4lCYar60eRMhm1A==yQMvjeHswVaXi55a";
 
-    private String mTitle;
+    TextView mTitle;
+    TextView mBody;
+    Button mCreateLogButton;
+    URL quoteURL;
+    TextView quote;
+    Thread networkThread;
+    static boolean resumed;
 
-    private String mBody;
 
-    private LocalDate date;
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
 
-    private String stringDate;
+        if(Log.allLogs.size() == 0 ){
+            createPersistentLogs();
+        }
 
-    private int index;
+        resumed = true; // boolean to monitor activity state for api data pull scheduling
 
-    /* statics */
-    static int indexCounter = 1;
-    public static ArrayList<Log> allLogs = new ArrayList<>();
-    public static ArrayList<Log> reverseSortedLogs = new ArrayList<>();
+        /* quote setup */
+        quote = findViewById(R.id.the_quote);
+        quoteURL = buildUrl();
 
-    /* constructor */
-    public Log(){
-        checkResetIndex();
-        date = LocalDate.now();
-        this.stringDate = formatLocalDate(date);
-        this.mID = UUID.randomUUID();
-        setIndex(indexCounter++);
+        /* networking - anonymous offloaded thread to pull api data every 8 seconds */
+        networkThread = new Thread(() -> {
+            try {
+                while (resumed){
+                    JSONObject jsonObj = getJSONResponseFromAPI(quoteURL, API_KEY);
+                    if(jsonObj!=null){
+                        quote.setText(jsonObj.getString("quote"));
+                        Thread.sleep(8000);
+                    } else {
+                        throw new NullPointerException();
+                    }
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
+        networkThread.start();
+
+
+
+
+        /* wire widgets */
+        mTitle = findViewById(R.id.main_logTitle);
+        mBody = findViewById(R.id.main_logBody);
+        mCreateLogButton = findViewById(R.id.main_createLog_btn);
+
+        /* when createLogButton is pressed, create Log object with input data */
+        mCreateLogButton.setOnClickListener( v -> {
+            /** add -> if null functionality **/
+            Log newLog = new Log();
+            String title = mTitle.getText().toString();
+            String body = mBody.getText().toString();
+            newLog.setTitle(title);
+            newLog.setBody(body);
+            Log.allLogs.add(newLog);
+            clearFormData();
+            addToSharedPref(newLog, getSharedPref(MainActivity.this));  // add log to persistent storage
+
+            Intent intent = new Intent(MainActivity.this, RecordedLogs.class);
+            intent.putExtra("sent_log", newLog); // use serializable version of putExtra
+            startActivity(intent);
+        });
     }
 
-    /* formats the LocalDate into UK formatted String date for UI display */
-    private String formatLocalDate(LocalDate date) {
-        DateTimeFormatter dtf = DateTimeFormatter.ofPattern("dd/MM/yyyy");
-        return dtf.format(date);
+    @Override
+    public void onPause(){
+        super.onPause();
+        resumed = false;
     }
 
-    /* resets index counter is higher than 200 */
-    public void checkResetIndex(){
-        if(getIndex() > 200) setIndex(1);
+
+    @Override
+    public void onItemClick(int position) {
+
     }
 
-    /* sorts the logs objects via the index field, and then reverses to ensure
-    * index 1 is at the tail */
-    public static void sortedLogs() {
-        ArrayList<Log> reverseSorted = (ArrayList<Log>) allLogs.stream().sorted(Comparator.comparingInt(Log::getIndex)).collect(Collectors.toList());
-        Collections.reverse(reverseSorted);
-        reverseSortedLogs = reverseSorted;
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        MenuInflater inflater = getMenuInflater();
+        inflater.inflate(R.menu.app_menu, menu);
+        return true;
     }
 
-    /* accessors */
-    public String getTitle() {
-        return mTitle;
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+
+        SharedPreferences sharedPreferences = getSharedPref(MainActivity.this);
+        SharedPreferences.Editor editor = sharedPreferences.edit();
+
+        if(MenuFunc.menuFunctionality(editor,item,MainActivity.this)){
+            return true;
+        }
+        return false;
     }
 
-    public void setTitle(String title) {
-        mTitle = title;
+    /* clear text views */
+    void clearFormData(){
+        mBody.setText("");
+        mTitle.setText("");
     }
 
-    public String getBody() {
-        return mBody;
+    /********** NETWORKING METHODS **********/
+
+    /* build url */
+    public static URL buildUrl() {
+        URL url = null;
+        try {
+            url = new URL("https://api.api-ninjas.com/v1/quotes?category=happiness");
+        } catch (MalformedURLException e) {
+            e.printStackTrace();
+        }
+        return url;
     }
 
-    public void setBody(String body) {
-        mBody = body;
+    /* returns a json object */
+    public static JSONObject getJSONResponseFromAPI(URL url, String api_key) throws IOException {
+        try{
+            //make connection
+            HttpURLConnection urlc = (HttpURLConnection) url.openConnection();
+            urlc.setRequestMethod("GET");
+            // set the content type
+            urlc.setRequestProperty("Content-Type", "application/json");
+            urlc.setRequestProperty("X-Api-Key", api_key);
+            android.util.Log.d("http", "connected: " + url);
+            urlc.setAllowUserInteraction(false);
+            urlc.connect();
+
+            StringBuffer response = new StringBuffer();
+            //get result
+            BufferedReader br = new BufferedReader(new InputStreamReader(urlc.getInputStream()));
+            String l;
+            while ((l=br.readLine())!=null) {
+                response.append(l);
+            }
+            /* extracting quote from response */
+            JSONObject jsonObj = new JSONObject(response.toString().substring(response.indexOf("{"), response.lastIndexOf("}")+1));
+            br.close();
+            urlc.disconnect();
+            return jsonObj;
+        } catch (Exception e){
+            e.printStackTrace();
+            return null;
+        }
     }
 
-    public String getStringDate() {
-        return stringDate;
+
+    /********** SHARED PREF METHODS **********/
+
+    /* add to shared preference */
+    void addToSharedPref(Log log, SharedPreferences sharedPreferences){
+        SharedPreferences.Editor editor = sharedPreferences.edit();
+        try {
+            editor.putString(log.getID().toString(), formattedLog(log));
+            editor.apply();
+        } catch (Exception e){
+            e.printStackTrace();
+        }
     }
 
-    public UUID getID() {
-        return mID;
+    /* print to logcat. Filter with 'pref_data' tag name
+    * only available on create log */
+    public void createPersistentLogs(){
+        SharedPreferences pref = getSharedPref(MainActivity.this);
+
+        Map<String, ?> allData = pref.getAll();
+        for( Map.Entry<String, ?> entry: allData.entrySet() ){
+            String formattedString = (String)entry.getValue();
+            Log newLog = new Log();
+            newLog.setTitle(formattedString.substring(formattedString.indexOf('{')+1,formattedString.indexOf('}')));
+            newLog.setBody(formattedString.substring(formattedString.indexOf('[')+1,formattedString.indexOf(']')));
+            Log.allLogs.add(newLog);
+        }
+        Log.sortedLogs();
+        for(Log l: Log.reverseSortedLogs ){
+            android.util.Log.d("logs", l.getTitle() + " : " + l.getBody() );
+        }
     }
 
-    public int getIndex() { return this.index; }
+    /* return shared preference */
+    public static SharedPreferences getSharedPref(Context context){
+        return context.getSharedPreferences(Integer.toString(R.string.shared_pref_key),Context.MODE_PRIVATE);
+    }
 
-    public void setIndex(int index){ this.index = index; }
+    /* formats log contents for shared preference insertion and retrieval via substring extraction */
+    String formattedLog(Log log){
+        return "{"+log.getTitle()+"}["+log.getBody()+"]";
+    }
+
+
 }
